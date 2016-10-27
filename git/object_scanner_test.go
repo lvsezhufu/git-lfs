@@ -12,6 +12,10 @@ func TestObjectScannerInitializesWithCorrectSupportedValues(t *testing.T) {
 	var from, to bytes.Buffer
 
 	proto := newProtocolRW(nil, &from)
+	if err := proto.writePacketText("git-filter-client"); err != nil {
+		t.Fatalf("expected... %v", err.Error())
+	}
+
 	require.Nil(t, proto.writePacketText("git-filter-client"))
 	require.Nil(t, proto.writePacketList([]string{"version=2"}))
 
@@ -102,7 +106,7 @@ func TestObjectScannerReadsRequestHeadersAndPayload(t *testing.T) {
 	require.Nil(t, proto.writePacketText("first"))
 	require.Nil(t, proto.writePacketText("second"))
 
-	req, err := NewObjectScanner(&from, &to).ReadRequest()
+	req, err := readRequest(NewObjectScanner(&from, &to))
 
 	assert.Nil(t, err)
 	assert.Equal(t, req.Header["foo"], "bar")
@@ -121,7 +125,7 @@ func TestObjectScannerRejectsInvalidHeaderPackets(t *testing.T) {
 	// (Invalid) headers
 	require.Nil(t, proto.writePacket([]byte{}))
 
-	headers, payload, err := NewObjectScanner(&from, nil).ReadRequest()
+	req, err := readRequest(NewObjectScanner(&from, nil))
 
 	require.NotNil(t, err)
 	assert.Equal(t, "Invalid packet length.", err.Error())
@@ -142,7 +146,7 @@ func TestObjectScannerRejectsInvalidPayloadPackets(t *testing.T) {
 	require.Nil(t, proto.writePacketText("second"))
 	require.Nil(t, proto.writePacket([]byte{})) // <-
 
-	req, err := NewObjectScanner(&from, &to).ReadRequest()
+	req, err := readRequest(NewObjectScanner(&from, &to))
 
 	require.NotNil(t, err)
 	assert.Equal(t, "Invalid packet length.", err.Error())
@@ -228,4 +232,17 @@ func TestObjectScannerWritesResponsesInMultipleChunks(t *testing.T) {
 	status, err := proto.readPacketList()
 	assert.Nil(t, err)
 	assert.Equal(t, []string{"status=success"}, status)
+}
+
+// readRequest preforms a single scan operation on the given `*ObjectScanner`,
+// "s", and returns: an error if there was one, or a request if there was one.
+// If neither, it returns (nil, nil).
+func readRequest(s *ObjectScanner) (*Request, error) {
+	s.Scan()
+
+	if err := s.Err(); err != nil {
+		return nil, err
+	}
+
+	return s.Request(), nil
 }
