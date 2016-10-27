@@ -2,6 +2,7 @@ package git
 
 import (
 	"bytes"
+	"io/ioutil"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -111,11 +112,10 @@ func TestObjectScannerReadsRequestHeadersAndPayload(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, req.Header["foo"], "bar")
 	assert.Equal(t, req.Header["other"], "woot")
-	assert.Equal(t, []byte("first\nsecond\n"), req.Payload)
 
-	resp, err := newProtocolRW(&to, nil).readPacketList()
+	payload, err := ioutil.ReadAll(req.Payload)
 	assert.Nil(t, err)
-	assert.Equal(t, []string{"status=success"}, resp)
+	assert.Equal(t, []byte("first\nsecond\n"), payload)
 }
 
 func TestObjectScannerRejectsInvalidHeaderPackets(t *testing.T) {
