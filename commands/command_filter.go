@@ -18,7 +18,7 @@ var (
 	filterSmudgeSkip = false
 )
 
-func clean(reader io.Reader, fileName string) ([]byte, error) {
+func clean(to io.Writer, reader io.Reader, fileName string) error {
 	var cb progress.CopyCallback
 	var file *os.File
 	var fileSize int64
@@ -49,7 +49,10 @@ func clean(reader io.Reader, fileName string) ([]byte, error) {
 	if errors.IsCleanPointerError(err) {
 		// TODO: report errors differently!
 		// os.Stdout.Write(errors.GetContext(err, "bytes").([]byte))
-		return errors.GetContext(err, "bytes").([]byte), nil
+		// return errors.GetContext(err, "bytes").([]byte), nil
+
+		// TODO(taylor): what does this mean?
+		return nil
 	}
 
 	if err != nil {
@@ -75,20 +78,21 @@ func clean(reader io.Reader, fileName string) ([]byte, error) {
 		Debug("Writing %s", mediafile)
 	}
 
-	return []byte(cleaned.Pointer.Encoded()), nil
+	_, err = cleaned.Pointer.Encode(to)
+	return err
 }
 
-func smudge(reader io.Reader, filename string) ([]byte, error) {
+func smudge(to io.Writer, reader io.Reader, filename string) error {
+	var buf bytes.Buffer
+	reader = io.TeeReader(reader, &buf)
+
 	ptr, err := lfs.DecodePointer(reader)
 	if err != nil {
-		// mr := io.MultiReader(b, reader)
-		// _, err := io.Copy(os.Stdout, mr)
-		// if err != nil {
-		// 	Panic(err, "Error writing data to stdout:")
-		// }
-		var content []byte
-		reader.Read(content)
-		return content, nil
+		if _, cerr := io.Copy(to, &buf); cerr != nil {
+			Panic(cerr, "Error writing data to stdout:")
+		}
+
+		return err
 	}
 
 	lfs.LinkOrCopyFromReference(ptr.Oid, ptr.Size)
@@ -105,8 +109,8 @@ func smudge(reader io.Reader, filename string) ([]byte, error) {
 		download = false
 	}
 
-	buf := new(bytes.Buffer)
-	err = ptr.Smudge(buf, filename, download, TransferManifest(), cb)
+	sbuf := new(bytes.Buffer)
+	err = ptr.Smudge(sbuf, filename, download, TransferManifest(), cb)
 	if file != nil {
 		file.Close()
 	}
@@ -121,10 +125,12 @@ func smudge(reader io.Reader, filename string) ([]byte, error) {
 			}
 		}
 
-		return []byte(ptr.Encoded()), nil
+		_, err = ptr.Encode(to)
+		return err
 	}
 
-	return buf.Bytes(), nil
+	_, err = ptr.Encode(to)
+	return err
 }
 
 func filterCommand(cmd *cobra.Command, args []string) {
@@ -132,6 +138,7 @@ func filterCommand(cmd *cobra.Command, args []string) {
 	lfs.InstallHooks(false)
 
 	s := git.NewObjectScanner(os.Stdin, os.Stdout)
+	w := git.NewPacketWriter(os.Stdout)
 
 	if err := s.Init(); err != nil {
 		ExitWithError(err)
@@ -142,30 +149,29 @@ func filterCommand(cmd *cobra.Command, args []string) {
 
 Scan:
 	for s.Scan() {
-		req := s.Request()
-
-		// TODO:
-		// clean/smudge should also take a Writer instead of returning []byte
-		var outputData []byte
 		var err error
 
-		switch req.Header["command"] {
+		switch req := s.Request(); req.Header["command"] {
 		case "clean":
-			outputData, err = clean(req.Payload, req.Header["pathname"])
+			err = clean(w, req.Payload, req.Header["pathname"])
 		case "smudge":
-			outputData, err = smudge(req.Payload, req.Header["pathname"])
+			err = smudge(w, req.Payload, req.Header["pathname"])
 		default:
 			fmt.Errorf("Unknown command %s", cmd)
 			break Scan
 		}
 
-		if err != nil {
-			s.WriteStatus("error")
-
-		} else {
-			s.WriteStatus("success")
-			s.WriteResponse(outputData)
+		if err == nil {
+			_, err = w.Write(nil)
 		}
+
+		var status string
+		if err != nil {
+			status = "error"
+		} else {
+			status = "success"
+		}
+		s.WriteStatus(status)
 	}
 
 	if err := s.Err(); err != nil {
